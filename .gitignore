@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data & artifacts -- regenerated per Kaggle session, never committed.
+# The raw o1_28 scenario is 21 GB; preprocessed tensors and checkpoints
+# belong in a Kaggle Dataset, not in git.
+*.pt
+*.npy
+*.zip
+*.mat
+data/*.pt
+results/
+checkpoints/
+kaggle/
+
+# Keep plots and CSVs that go into the paper by exception:
+!results/plots/*.png
+!results/*.csv
