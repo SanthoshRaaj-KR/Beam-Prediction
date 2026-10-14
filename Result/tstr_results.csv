@@ -1,0 +1,4 @@
+run_id,seed,n_synth_train,n_synth_val,synth_train_classes,top1_acc,top3_acc,spectral_eff_pct,best_val_acc,epochs,timestamp
+TSTR,0,400,100,9,0.6005,0.778,66.9217,0.88,100,2026-10-14T17:50:51
+TSTR,1,400,100,9,0.608,0.8185,67.8194,0.77,100,2026-10-14T17:51:02
+TSTR,2,400,100,9,0.5845,0.796,65.1072,0.77,100,2026-10-14T17:51:12
