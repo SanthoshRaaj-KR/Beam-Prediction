@@ -58,12 +58,51 @@ def build_ch_params(deepmimo):
     return p
 
 
+def _attr(obj, name, default=None):
+    """getattr() that survives DeepMIMO's Dataset.
+
+    Dataset.__getattr__ raises KeyError for an unknown name, not the
+    AttributeError the language expects. hasattr() and getattr(..., default)
+    only swallow AttributeError, so both PROPAGATE that KeyError and crash the
+    caller. Never probe a DeepMIMO Dataset with hasattr/getattr -- use this.
+    """
+    try:
+        return getattr(obj, name)
+    except Exception:
+        return default
+
+
+def _keys(obj):
+    """Best-effort list of what a Dataset actually holds, for error messages."""
+    for probe in ("keys", "_data"):
+        got = _attr(obj, probe)
+        if callable(got):
+            try:
+                return sorted(got())
+            except Exception:
+                pass
+        elif isinstance(got, dict):
+            return sorted(got.keys())
+    return [k for k in dir(obj) if not k.startswith("_")]
+
+
 def _as_dataset(obj):
     """generate() may return a Dataset or a 1-element MacroDataset."""
-    if hasattr(obj, "datasets"):
-        ds = obj.datasets
-        return ds[0] if len(ds) else obj
-    return obj
+    inner = _attr(obj, "datasets")
+    if inner is None:
+        return obj                      # already a plain Dataset
+    return inner[0] if len(inner) else obj
+
+
+def _first_attr(obj, names, what):
+    """Fetch the first attribute that exists, or fail with the real key list."""
+    for n in names:
+        got = _attr(obj, n)
+        if got is not None:
+            return got, n
+    raise KeyError(
+        "could not find %s on the dataset under any of %s. Available keys: %s"
+        % (what, names, _keys(obj)))
 
 
 def _normalize_channel_shape(ch):
@@ -122,10 +161,14 @@ def load_raw(n_subsample=N_SUBSAMPLE):
         ch_params=ch_params,
     )
     ds = _as_dataset(out)
-    print("dataset:", type(ds).__name__, "| n_ue:", getattr(ds, "n_ue", "?"))
+    print("dataset:", type(ds).__name__, "| n_ue:", _attr(ds, "n_ue", "?"))
 
-    H_all = _normalize_channel_shape(ds.ch)
-    pos_all = np.asarray(ds.rx_pos)[:, :2].astype(np.float64)   # drop z
+    ch, ch_key = _first_attr(ds, ("ch", "channel", "channels"), "the channel matrix")
+    pos, pos_key = _first_attr(ds, ("rx_pos", "rx_loc", "pos"), "the RX positions")
+    print("using keys: channel=%r positions=%r" % (ch_key, pos_key))
+
+    H_all = _normalize_channel_shape(ch)
+    pos_all = np.asarray(pos)[:, :2].astype(np.float64)   # drop z
     print("positions:", pos_all.shape)
 
     assert H_all.shape[0] == pos_all.shape[0], (H_all.shape, pos_all.shape)

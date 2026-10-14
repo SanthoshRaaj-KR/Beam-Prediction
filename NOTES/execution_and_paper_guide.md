@@ -87,6 +87,26 @@ freq_domain: 1 | num_paths: 25 | doppler: 0
 
 *Resolved 2026-10-14 (see the API facts above): `load()` vs `generate()` signatures, `MacroDataset` structure, UE subsetting via `trim_params`, and the `steering_vec()` question (answer: keep the hand-rolled DFT codebook).*
 
+### Never probe a DeepMIMO `Dataset` with `hasattr()` or `getattr(..., default)`
+
+`deepmimo.datasets.dataset.Dataset.__getattr__` falls through to
+`_resolve_key()`, which **raises `KeyError`** for an unknown name. Python's
+`hasattr()` and three-argument `getattr()` only swallow `AttributeError`, so a
+`KeyError` escapes and kills the caller. Observed 2026-10-14: `hasattr(out,
+"datasets")` on a plain `Dataset` crashed Cell 5 with `KeyError: 'datasets'`
+*after* channel generation had already succeeded — i.e. the data was fine and a
+defensive type-probe was the only thing that failed. `preprocess.py` now routes
+every attribute read through `_attr()`, a `try/except Exception` wrapper.
+
+Two consequences worth remembering:
+
+- `generate()` with a single `tx_sets`/`rx_sets` entry returns a **plain
+  `Dataset`, not a `MacroDataset`.** There is no `.datasets` list to index.
+- Any "does this object have X?" check against this library must be
+  `try/except Exception`, not `hasattr`. This applies to future debugging, not
+  just the one site that was fixed.
+
+
 ---
 
 ## 0. Kaggle / GPU Session Strategy (read this before writing any code)
