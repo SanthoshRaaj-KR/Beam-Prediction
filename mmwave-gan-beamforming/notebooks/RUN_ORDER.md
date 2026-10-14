@@ -1,13 +1,52 @@
 # Kaggle run order — paste these cells in sequence
 
-Upload the whole `mmwave-gan-beamforming/` folder as a **Kaggle Dataset** (or
-`!git clone` it), then `sys.path.insert(0, <repo root>)`. Every cell below
-assumes the repo root is importable.
+Every cell below assumes **the repo root is on `sys.path`**. `ModuleNotFoundError:
+No module named 'data'` means Cell 0 was not run (or was lost to a kernel
+restart). Run Cell 0 first, and again after every `Restart Session`.
 
 **Save `/kaggle/working/` to a Kaggle Dataset before the 7-hour session dies.**
 You will cross that boundary somewhere around the GAN training cell.
 
 ---
+
+## Cell 0 — bootstrap: make the repo importable (RUN THIS FIRST)
+
+Cloning beats uploading a Kaggle Dataset: the repo is code-only (a few hundred
+KB), and re-cloning is how you pick up fixes pushed mid-session.
+
+```python
+import sys, os
+!rm -rf /kaggle/working/Beam-Prediction
+!git clone -q https://github.com/SanthoshRaaj-KR/Beam-Prediction.git /kaggle/working/Beam-Prediction
+
+ROOT = '/kaggle/working/Beam-Prediction/mmwave-gan-beamforming'
+sys.path.insert(0, ROOT)
+os.chdir('/kaggle/working')          # never write into a read-only input mount
+
+import data.preprocess, utils.codebook, evaluation.run_ablation
+print('OK:', data.preprocess.__file__)
+```
+
+Already uploaded it as a Dataset instead? Replace the clone with a search, since
+Kaggle's mount path depends on the dataset slug:
+
+```python
+import sys, os, glob
+ROOT = next(p for p in glob.glob('/kaggle/input/*/**/', recursive=True)
+            if os.path.isfile(os.path.join(p, 'data', 'preprocess.py')))
+sys.path.insert(0, ROOT)
+os.chdir('/kaggle/working')
+import data.preprocess; print('OK:', data.preprocess.__file__)
+```
+
+Two import traps this avoids:
+
+- **`sys.path` does not survive `Restart Session`.** The DeepMIMO install in
+  Cell 1 requires a restart, which silently drops the path.
+- **`/kaggle/working/data/` shadows the `data` package.** Cell 5 creates that
+  directory for the `.pt` tensors, and it sits in the notebook's cwd. Every
+  source dir carries an `__init__.py` so the real package wins the `sys.path`
+  scan regardless — but keep `ROOT` inserted at position 0 anyway.
 
 ## Cell 1 — install
 ```python
@@ -64,8 +103,9 @@ Capture the **full output** — it is what `data/preprocess.py:load_raw()` needs
 
 ## Cell 4 — smoke test (no data needed; run it while the download finishes)
 ```python
-sys.path.insert(0, '/kaggle/input/<your-dataset>/mmwave-gan-beamforming')
-!cd /kaggle/input/<your-dataset>/mmwave-gan-beamforming && python smoke_test.py
+import sys, subprocess
+print(subprocess.run([sys.executable, 'smoke_test.py'], cwd=ROOT,
+                     capture_output=True, text=True).stdout[-3000:])
 ```
 Must print `ALL SMOKE TESTS PASSED`. If it does not, fix that before spending
 GPU time on real data.

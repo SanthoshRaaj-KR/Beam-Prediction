@@ -20,8 +20,8 @@ prediction*, and treats the cross-domain finding as the hypothesis under test.
 ## Status
 
 Pipeline implemented and verified end to end on fabricated data
-(`python smoke_test.py`). Awaiting the DeepMIMO API mapping needed to fill
-`load_raw()` in `mmwave-gan-beamforming/data/preprocess.py`; no real results yet.
+(`python smoke_test.py`). No stubs remain: `load_raw()` is written against
+DeepMIMO 4.0.5 and every phase is runnable. No real results yet.
 
 ## Layout
 
@@ -36,7 +36,7 @@ mmwave-gan-beamforming/
   models/                       BeamCNN, Generator, Critic + gradient penalty
   training/                     frozen classifier recipe; WGAN-GP with resume
   evaluation/                   ablation sweep, GAN quality checks, figures/tables
-  data/preprocess.py            Phase 1 -- one TODO(PHASE0) stub remains
+  data/preprocess.py            Phase 1 -- DeepMIMO extraction + preprocessing
   notebooks/RUN_ORDER.md        cell-by-cell Kaggle run order
   smoke_test.py                 end-to-end check, no DeepMIMO required
 ```
@@ -69,7 +69,9 @@ python smoke_test.py          # verifies the pipeline on fabricated data
 ```
 
 Then follow `mmwave-gan-beamforming/notebooks/RUN_ORDER.md` on a Kaggle GPU
-session. Two environment facts worth knowing before you start: the extracted
+session, starting at its Cell 0 (the `sys.path` bootstrap — without it every
+`from data.preprocess import ...` fails, and it must be re-run after the kernel
+restart that the DeepMIMO install requires). Two environment facts worth knowing before you start: the extracted
 `o1_28` scenario is **21 GB**, which exceeds Kaggle's 20 GB `/kaggle/working`
 cap, so it must live on the root filesystem and be symlinked into place; and
 `deepmimo.download()`'s `output_dir` does not control the final install target.
