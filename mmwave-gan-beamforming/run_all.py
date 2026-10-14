@@ -41,7 +41,7 @@ if HERE not in sys.path:
 
 SCENARIO = "o1_28"
 STAGES = ["scenario", "data", "labels", "baseline", "gan",
-          "quality", "sweep", "figures"]
+          "quality", "mechanism", "sweep", "figures"]
 
 # "Clearly beats" for the Phase 3 gate, in absolute accuracy. A working
 # classifier on 32 beams should clear the majority class by far more than this;
@@ -499,6 +499,47 @@ def stage_quality(ctx):
     return {"discriminability": t3["mean"], "label_overlap": t4["overlap"]}
 
 
+def stage_mechanism(ctx):
+    """Why the high-ratio degradation happens -- rank spectrum + TSTR.
+
+    Depends only on the generator, not on the sweep, so it can run after the
+    fact without touching ablation_results.csv. TSTR writes its own CSV.
+    """
+    from training.train_gan import generate_synthetic
+    from evaluation import mechanism_check as mc
+
+    n = ctx.seed_csi.shape[0]
+    synth, _ = generate_synthetic(ctx.generator, ctx.seed_pos, n, seed=0,
+                                  device=ctx.args.device)
+
+    spec = mc.rank_spectrum(ctx.seed_csi, synth, plot_dir=ctx.plot_dir)
+    tstr = mc.run_tstr(
+        ctx.seed_pos, ctx.test_csi, ctx.test_labels, ctx.codebook,
+        ctx.generator, test_norms=ctx.test_norm, seeds=ctx.args.seeds,
+        device=ctx.args.device, results_dir=ctx.results_dir,
+        epochs=ctx.args.epochs,
+    )
+
+    r0 = ctx.state.num("r0_top1_mean")
+    extra = {}
+    if r0 is not None:
+        extra = mc.summarise(spec, tstr, ctx.majority[0], r0)
+
+    ctx.state.record(
+        rank90_real=spec["rank90_real"], rank90_synth=spec["rank90_synth"],
+        effrank_real=spec["effrank_real"], effrank_synth=spec["effrank_synth"],
+        rank_verdict=spec["rank_verdict"],
+        tstr_top1_mean=tstr["tstr_top1_mean"],
+        tstr_top1_std=tstr["tstr_top1_std"],
+        tstr_top3_mean=tstr["tstr_top3_mean"],
+        tstr_synth_train_classes=tstr["tstr_synth_train_classes"],
+        **extra
+    )
+    return {"rank90_real": round(spec["rank90_real"], 2),
+            "rank90_synth": round(spec["rank90_synth"], 2),
+            "tstr_top1": round(tstr["tstr_top1_mean"], 4)}
+
+
 def stage_sweep(ctx):
     """Phase 7 -- the remaining ratios. Resumes per (ratio, seed)."""
     ratios = [r for r in ctx.args.ratios if r != 0]
@@ -542,8 +583,17 @@ STAGE_KEYS = {
     "quality": ["gan_discriminability_mean", "gan_discriminability_std",
                 "gan_discriminability_verdict", "gan_label_overlap",
                 "gan_synth_classes_populated", "gan_power_wasserstein"],
+    "mechanism": ["rank90_real", "rank90_synth", "effrank_real",
+                  "effrank_synth", "rank_verdict", "tstr_top1_mean",
+                  "tstr_top1_std", "tstr_top3_mean",
+                  "tstr_synth_train_classes", "tstr_above_floor_pp"],
     "figures": ["best_ratio", "best_top1_mean", "improvement_pp",
-                "mannwhitney_p", "ttest_p", "n_runs_total"],
+                "mannwhitney_p", "ttest_p", "n_runs_total",
+                "trend_spearman_rho", "trend_spearman_p",
+                "trend_slope_pp_per_100", "trend_slope_p",
+                "low_ratio_mean", "high_ratio_mean", "low_vs_high_pp",
+                "low_vs_high_welch_p", "low_vs_high_mw_p",
+                "low_vs_high_cohen_d"],
 }
 
 
@@ -593,6 +643,7 @@ def _reset_from(ctx, stage):
 HANDLERS = {
     "scenario": stage_scenario, "data": stage_data, "labels": stage_labels,
     "baseline": stage_baseline, "gan": stage_gan, "quality": stage_quality,
+    "mechanism": stage_mechanism,
     "sweep": stage_sweep, "figures": stage_figures,
 }
 
@@ -614,8 +665,23 @@ PAPER_NUMBERS = [
                                 "gan_discriminability_verdict",
                                 "gan_label_overlap",
                                 "gan_synth_classes_populated"]),
-    ("Phase 8 -- headline", ["best_ratio", "best_top1_mean", "improvement_pp",
-                             "mannwhitney_p", "ttest_p", "n_runs_total"]),
+    ("Phase 6b -- mechanism", ["rank90_real", "rank90_synth",
+                               "effrank_real", "effrank_synth",
+                               "rank_verdict", "tstr_top1_mean",
+                               "tstr_top1_std", "tstr_top3_mean",
+                               "tstr_synth_train_classes",
+                               "tstr_above_floor_pp"]),
+    ("Phase 8 -- PRIMARY trend", ["trend_spearman_rho", "trend_spearman_p",
+                                  "trend_slope_pp_per_100",
+                                  "trend_slope_p", "n_runs_total"]),
+    ("Phase 8 -- post-hoc low vs high", ["low_ratio_mean", "high_ratio_mean",
+                                         "low_vs_high_pp",
+                                         "low_vs_high_welch_p",
+                                         "low_vs_high_mw_p",
+                                         "low_vs_high_cohen_d"]),
+    ("Phase 8 -- legacy best vs R0 (do NOT headline)",
+     ["best_ratio", "best_top1_mean", "improvement_pp",
+      "mannwhitney_p", "ttest_p"]),
 ]
 
 
