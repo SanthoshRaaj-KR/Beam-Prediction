@@ -37,7 +37,8 @@ mmwave-gan-beamforming/
   training/                     frozen classifier recipe; WGAN-GP with resume
   evaluation/                   ablation sweep, GAN quality checks, figures/tables
   data/preprocess.py            Phase 1 -- DeepMIMO extraction + preprocessing
-  notebooks/RUN_ORDER.md        cell-by-cell Kaggle run order
+  run_all.py                    one-command resumable driver for all 8 stages
+  notebooks/RUN_ORDER.md        Kaggle run order (+ cell-by-cell reference)
   smoke_test.py                 end-to-end check, no DeepMIMO required
 ```
 
@@ -68,10 +69,27 @@ rather than the generator, and the test set is touched exactly once per run.
 python smoke_test.py          # verifies the pipeline on fabricated data
 ```
 
-Then follow `mmwave-gan-beamforming/notebooks/RUN_ORDER.md` on a Kaggle GPU
-session, starting at its Cell 0 (the `sys.path` bootstrap — without it every
-`from data.preprocess import ...` fails, and it must be re-run after the kernel
-restart that the DeepMIMO install requires). Two environment facts worth knowing before you start: the extracted
+On a Kaggle GPU session, the whole study is one command:
+
+```bash
+pip install -q DeepMIMO
+git clone https://github.com/SanthoshRaaj-KR/Beam-Prediction.git
+python Beam-Prediction/mmwave-gan-beamforming/run_all.py --download
+```
+
+`run_all.py` runs eight stages — scenario setup, preprocessing, labelling, the
+real-only baseline, GAN training, GAN quality checks, the 21-run sweep, and the
+figures — and **every stage is resumable**. It skips stages whose output is
+already on disk, resumes GAN training from its newest checkpoint, and skips
+`(ratio, seed)` pairs already logged in the results CSV, so after a Kaggle
+session expires you re-run the identical command. `--status` reports progress
+and every recorded number; `--dry-run` exercises the pipeline at 2 epochs in an
+isolated directory. Two sanity gates (beam-label degeneracy, and the baseline
+failing to beat the majority class) halt the run rather than let hours be spent
+on broken data.
+
+`notebooks/RUN_ORDER.md` documents the flags and keeps a cell-by-cell breakdown
+for debugging a single stage. Two environment facts worth knowing before you start: the extracted
 `o1_28` scenario is **21 GB**, which exceeds Kaggle's 20 GB `/kaggle/working`
 cap, so it must live on the root filesystem and be symlinked into place; and
 `deepmimo.download()`'s `output_dir` does not control the final install target.

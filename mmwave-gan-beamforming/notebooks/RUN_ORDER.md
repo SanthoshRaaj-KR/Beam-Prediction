@@ -1,52 +1,96 @@
-# Kaggle run order — paste these cells in sequence
+# Kaggle run order
 
-Every cell below assumes **the repo root is on `sys.path`**. `ModuleNotFoundError:
-No module named 'data'` means Cell 0 was not run (or was lost to a kernel
-restart). Run Cell 0 first, and again after every `Restart Session`.
+## Just run the whole thing — two cells, nothing else
 
-**Save `/kaggle/working/` to a Kaggle Dataset before the 7-hour session dies.**
-You will cross that boundary somewhere around the GAN training cell.
+```python
+!pip install -q DeepMIMO
+!rm -rf /kaggle/working/Beam-Prediction
+!git clone -q https://github.com/SanthoshRaaj-KR/Beam-Prediction.git /kaggle/working/Beam-Prediction
+```
+
+```python
+!python /kaggle/working/Beam-Prediction/mmwave-gan-beamforming/run_all.py
+```
+
+That is the whole study: channels → labels → baseline → GAN → quality checks →
+21-run sweep → figures, tables and significance tests. Add `--download` on the
+first ever run if the `o1_28` scenario is not on the machine yet.
+
+**No kernel restart needed.** The restart after `pip install deepmimo` is only
+required for the *notebook's own* interpreter; `run_all.py` is a subprocess, so
+it starts fresh and imports the newly installed package. Running it as a script
+also means there are no stale modules to clear after a code change.
+
+### When the session dies, re-run the exact same cell
+
+Every stage checks for its own output and skips itself if it is already there.
+The GAN resumes mid-training from its newest checkpoint, and the sweep skips
+`(ratio, seed)` pairs that are already rows in the CSV — so nothing is ever
+recomputed. **Save `/kaggle/working/` to a Kaggle Dataset before the session
+ends**, or there is nothing to resume from. You will likely cross that boundary
+during GAN training.
+
+### Useful flags
+
+```bash
+python run_all.py --status            # what is done + every number so far
+python run_all.py --only gan          # one stage
+python run_all.py --from sweep        # that stage onwards
+python run_all.py --redo figures      # re-run something already marked done
+python run_all.py --ratios 50,100,200 # behind on time? cut RATIOS, never seeds
+python run_all.py --dry-run           # 2-epoch pipeline test, isolated dir
+```
+
+`--status` prints the recorded numbers grouped by the paper section they fill;
+they also accumulate in `/kaggle/working/state.json`.
+
+`--dry-run` writes to `/kaggle/working/dryrun/` precisely so its 2-epoch
+numbers can never contaminate the real CSV. Nothing it produces is reportable.
+
+### Two hard gates, by design
+
+The script **stops** rather than wasting hours on broken data:
+
+- **Label gate** — fewer than ~10 of 32 beam classes populated means the
+  codebook math or the antenna axis is wrong.
+- **Baseline gate** — R0 Top-1 must beat the majority class by at least 5
+  points. If it does not, the classifier has learned only the class prior, and
+  no amount of GAN work fixes that.
+
+`--force` overrides both. Use it only to deliberately record a null result,
+never to get past a gate you have not understood.
 
 ---
 
-## Cell 0 — bootstrap: make the repo importable (RUN THIS FIRST)
+## Manual cell-by-cell reference
 
-Cloning beats uploading a Kaggle Dataset: the repo is code-only (a few hundred
-KB), and re-cloning is how you pick up fixes pushed mid-session.
+Everything below does the same work one piece at a time. It is for debugging a
+stage in isolation — `run_all.py` is the supported path. These cells assume the
+repo root is on `sys.path`:
 
 ```python
 import sys, os
-!rm -rf /kaggle/working/Beam-Prediction
-!git clone -q https://github.com/SanthoshRaaj-KR/Beam-Prediction.git /kaggle/working/Beam-Prediction
-
-ROOT = '/kaggle/working/Beam-Prediction/mmwave-gan-beamforming'
-sys.path.insert(0, ROOT)
-os.chdir('/kaggle/working')          # never write into a read-only input mount
-
-import data.preprocess, utils.codebook, evaluation.run_ablation
-print('OK:', data.preprocess.__file__)
+sys.path.insert(0, '/kaggle/working/Beam-Prediction/mmwave-gan-beamforming')
+os.chdir('/kaggle/working')      # never write into a read-only input mount
 ```
 
-Already uploaded it as a Dataset instead? Replace the clone with a search, since
-Kaggle's mount path depends on the dataset slug:
+Two import traps that bootstrap avoids:
+
+- **`sys.path` does not survive `Restart Session`**, and the DeepMIMO install
+  below requires one.
+- **`/kaggle/working/data/` shadows the `data` package.** Phase 1 creates that
+  directory for the `.pt` tensors and it sits in the notebook's cwd. Every
+  source dir carries an `__init__.py` so the real package wins the path scan
+  regardless — but keep the repo root at position 0 anyway.
+
+A third trap, if you edit a module and re-run a cell: Python keeps the old
+version in `sys.modules`. Clear it, or just use `run_all.py`.
 
 ```python
-import sys, os, glob
-ROOT = next(p for p in glob.glob('/kaggle/input/*/**/', recursive=True)
-            if os.path.isfile(os.path.join(p, 'data', 'preprocess.py')))
-sys.path.insert(0, ROOT)
-os.chdir('/kaggle/working')
-import data.preprocess; print('OK:', data.preprocess.__file__)
+for m in [k for k in list(sys.modules)
+          if k.split('.')[0] in ('data','models','training','evaluation','utils')]:
+    del sys.modules[m]
 ```
-
-Two import traps this avoids:
-
-- **`sys.path` does not survive `Restart Session`.** The DeepMIMO install in
-  Cell 1 requires a restart, which silently drops the path.
-- **`/kaggle/working/data/` shadows the `data` package.** Cell 5 creates that
-  directory for the `.pt` tensors, and it sits in the notebook's cwd. Every
-  source dir carries an `__init__.py` so the real package wins the `sys.path`
-  scan regardless — but keep `ROOT` inserted at position 0 anyway.
 
 ## Cell 1 — install
 ```python
