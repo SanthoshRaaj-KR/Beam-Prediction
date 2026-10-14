@@ -71,13 +71,30 @@ Must print `ALL SMOKE TESTS PASSED`. If it does not, fix that before spending
 GPU time on real data.
 
 ## Cell 5 — Phase 1: preprocessing
-Fill `load_raw()` in `data/preprocess.py` from Cell 3's output, then:
+`load_raw()` is written and configured for DeepMIMO 4.0.5 — just run it:
 ```python
 from data.preprocess import load_raw, preprocess
-H_all, pos_all = load_raw()
+H_all, pos_all = load_raw()        # BS set 4 (TX_3), RX set 0, 6000 UEs
 info = preprocess(H_all, pos_all)
 print(info)        # record n_dropped / n_retained / pos bounds -> HANDOFF_PHASE_1
 ```
+It subsets 6,000 UEs **before** computing channels (via `trim_params['idxs']`),
+so you never pay for the ~498k users you don't use. 6,000 leaves margin over
+the 2,500 needed after dead-user filtering.
+
+Config applied: `bs_antenna.shape=[64,1]` (the default is `[8,1]` — setting
+this is mandatory), `ue_antenna.shape=[1,1]`, and 32 subcarriers selected as
+`linspace(0, 511, 32)` — spread across the full 10 MHz band rather than taking
+bins 0–31, which would be a narrow, highly correlated slice. State that choice
+in the paper.
+
+**Two things to check in the output:**
+- The printed `raw channel shape` — record it for the handoff.
+- `n_retained` must be ≥ 2500. If it isn't, raise `N_SUBSAMPLE` in
+  `data/preprocess.py` and re-run.
+
+If the UE count comes back as something other than 6,000, `trim_params['idxs']`
+is probably indexing globally across all three RX sets rather than within set 0.
 
 ## Cell 6 — Phase 2: codebook + labels
 ```python

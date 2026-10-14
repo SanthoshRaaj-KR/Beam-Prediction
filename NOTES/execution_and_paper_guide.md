@@ -56,10 +56,34 @@
 - **`ChannelParameters` is a `DotDict`** — set nested values as dicts, e.g. `ChannelParameters(bs_antenna={'shape': [64, 1]}, freq_domain=True)`, and read them back with dot notation (`params.bs_antenna.shape`). Lists become numpy arrays at validation. `params.validate(n_ues)` checks consistency. Inspect the full default set with `pprint(ChannelParameters().to_dict())`.
 - **`steering_vec()` does NOT replace the hand-rolled DFT codebook — decided, keep the hand-rolled version.** Its signature is `steering_vec(array, phi=0, theta=0, spacing=0.5)`: it takes antenna *positions* and a single direction and returns one array-response vector, so building a 32-beam codebook would mean 32 calls with hand-mapped angles — more bug surface than the five-line DFT formula, not less. The DFT codebook is also the standard definition in the beam-prediction literature and therefore the better thing to report.
 
+**Channel configuration resolved 2026-10-14 — `ChannelParameters()` defaults and what to change:**
+
+```
+bs_antenna: {shape: [8,1], spacing: 0.5, rotation: [0,0,0], radiation_pattern: 'isotropic'}
+ue_antenna: {shape: [1,1], ...}
+ofdm:       {subcarriers: 512, selected_subcarriers: [0], bandwidth: 10 MHz, rx_filter: 0}
+freq_domain: 1 | num_paths: 25 | doppler: 0
+```
+
+- **`bs_antenna.shape` defaults to `[8,1]`, not 64.** It must be set to `[64,1]` explicitly or the whole study silently runs on an 8-element array. `ue_antenna.shape` is already `[1,1]`, which is what keeps `H` at `[64,S]`.
+- **32 subcarriers IS achievable — no downstream renumbering needed.** `ofdm.subcarriers` (512) is the **FFT size**; `ofdm.selected_subcarriers` chooses which bins are returned, and defaults to just `[0]` (a single subcarrier). Set it to 32 indices and the `[2,64,32]` shape holds everywhere.
+- **Which 32 is a real methodological choice, so state it in the paper.** Contiguous bins `0..31` of 512 sample a narrow, highly correlated slice of the 10 MHz band, which leaves the subcarrier axis nearly flat and gives the GAN almost nothing to learn along it. We use `np.linspace(0, 511, 32)` — spread across the full band — for genuine frequency selectivity.
+- **Dataset attribute names:** channel matrix at `ds.ch` (aliases `channel`/`channels`/`chs`), RX positions at `ds.rx_pos` (aliases `rx_loc`/`rx_locations`), TX at `ds.tx_pos`, UE count at `ds.n_ue`. Also available and useful: `ds.los` / `ds.los_status` (LoS flag, a second route to dead-user detection), `ds.n_paths`, `ds.power`, `ds.grid_size`, `ds.grid_spacing`.
+- **`generate()` returns a `Dataset` or a 1-element `MacroDataset`** depending on how many TX-RX pairs survive the restriction — handle both.
+
+**Scenario facts for the paper's methodology section (from `deepmimo.summary('o1_28')`):**
+
+- Ray-tracer **Remcom Wireless Insite v3.3**, carrier **28.0 GHz**.
+- Max path depth 4; **4 reflections, 0 diffractions, 0 scattering, 0 transmissions**. Diffuse scattering disabled. Terrain reflection on, terrain diffraction/scattering off.
+- 259,200 rays, uniform casting, 360° az / 180° el. **Synthetic array: True.**
+- Scene: 1 scene, 33 objects, 325 vertices, 231 faces. Two materials: *ITU layered drywall 28 GHz* (permittivity 2.94, conductivity 0.12 S/m) and *wet earth* (permittivity 25.00, conductivity 0.02 S/m).
+- **1,184,941 receivers total across 3 RX sets; 18 transmitters.** RX sets: set 0 = RX_1 (497,931), set 1 = RX_2 (199,281), set 2 = RX_3 (487,711). TX sets are 3–20, one point each (set 4 is TX_3).
+- **Every RX set reports `Active points == Total points`**, so set-level "active" filtering drops nothing — the dead-user filter still has to run on the computed channels (finite + nonzero Frobenius), exactly as Phase 1 specifies.
+
 **Still to be confirmed once we get further into Phase 1** (update this list as we go):
-- The exact **OFDM field names inside `ChannelParameters.DEFAULT_PARAMS`**, and whether `o1_28` supports exactly **32 subcarriers**. If it does not, the nearest supported value must be documented and propagated to every `32` downstream (codebook size is separate and stays 32).
-- The attribute names on a single `Dataset` (`ds.datasets[i]`) holding the **channel matrix** and **RX positions**.
-- Scenario carrier frequency and position grid bounds, for the paper's methodology section.
+- Whether `trim_params={'idxs': ...}` indexes **within the selected RX set** or globally across all three. If the generated UE count comes back as something other than the requested subsample size, this is the cause.
+- The exact axis order of `ds.ch` (handled defensively by `_normalize_channel_shape()`, which drops singleton axes and orients by matching 64/32 — but record the real shape when you see it).
+- Position grid bounds, which `preprocess()` prints and the paper needs.
 
 *Resolved 2026-10-14 (see the API facts above): `load()` vs `generate()` signatures, `MacroDataset` structure, UE subsetting via `trim_params`, and the `steering_vec()` question (answer: keep the hand-rolled DFT codebook).*
 

@@ -1,8 +1,17 @@
 """Phase 1 -- DeepMIMO extraction & preprocessing.
 
-!! THE ONE FUNCTION MARKED `TODO(PHASE0)` CANNOT BE WRITTEN BLIND. !!
-Fill load_raw() from the Phase 0 help() output, then run. Everything else here
-is complete.
+Written against DeepMIMO 4.0.5 / scenario o1_28. Key API facts (see the
+execution guide §0.5):
+
+  * Use generate(), not load(). load() with no restriction pulls all 54 TX-RX
+    pairs (~1.18M users per TX set); we need 2500.
+  * trim_params['idxs'] subsets UEs BEFORE channels are computed. We pass
+    explicit indices rather than idxs_mode='uniform' so the selection is
+    deterministic and needs no guesswork about idxs_kwargs.
+  * ofdm['subcarriers'] is the FFT size (512). ofdm['selected_subcarriers']
+    chooses which ones are returned -- that is how we land on exactly 32.
+  * bs_antenna['shape'] DEFAULTS TO [8,1]. It must be set to [64,1] explicitly
+    or you silently train on an 8-element array.
 
 Outputs to /kaggle/working/data/:
   seed_csi.pt  [500,2,64,32]   seed_pos.pt  [500,2]   seed_norm.pt  [500]
@@ -21,24 +30,106 @@ N_SEED, N_TEST = 500, 2000
 N_ANT, N_SUB = 64, 32
 SPLIT_SEED = 42
 
+# --- scenario layout (from deepmimo.summary('o1_28')) ---
+# RX sets: 0 (RX_1, 497931 users) | 1 (RX_2, 199281) | 2 (RX_3, 487711)
+# TX sets: 3..20, one point each. Set 4 is TX_3 -- BS3 is the commonly used
+# transmitter in O1 beam-prediction work. Any single BS is defensible; just
+# document the choice.
+TX_SET, RX_SET = 4, 0
+RX_SET_SIZE = 497931
+N_SUBSAMPLE = 6000      # margin over the 2500 needed, for dead-user dropout
+N_PATHS = 25
+FFT_SIZE = 512
 
-def load_raw():
-    """TODO(PHASE0): fill from help(deepmimo.load) / help(deepmimo.ChannelParameters).
 
-    Must return:
-        H_all   -- complex array [n_users, N_ANT, N_SUB]
-        pos_all -- float array   [n_users, 2]   (x, y; drop z, O1 is ground-level)
+def build_ch_params(deepmimo):
+    """ChannelParameters for a 64-element ULA BS, single-antenna UE, 32 subcarriers."""
+    p = deepmimo.ChannelParameters()
+    p.bs_antenna.shape = np.array([N_ANT, 1])     # 64-element ULA (default is [8,1]!)
+    p.ue_antenna.shape = np.array([1, 1])         # single-antenna RX -> H stays [64,S]
+    p.ofdm.subcarriers = FFT_SIZE
+    # Spread the 32 selected subcarriers across the full 512-bin / 10 MHz band.
+    # Taking 0..31 contiguously would sample a narrow, highly correlated slice,
+    # leaving the subcarrier axis nearly flat and giving the GAN little to learn
+    # along it. Document this choice in the paper.
+    p.ofdm.selected_subcarriers = np.linspace(0, FFT_SIZE - 1, N_SUB).astype(int)
+    p.freq_domain = 1
+    p.num_paths = N_PATHS
+    return p
 
-    Channel config to set via ChannelParameters:
-        28 GHz (intrinsic to o1_28) | BS array 64-element ULA | UE 1 element
-        32 OFDM subcarriers -- if unsupported, use the nearest value, DOCUMENT
-        the real number, and propagate it everywhere (every 32 downstream).
+
+def _as_dataset(obj):
+    """generate() may return a Dataset or a 1-element MacroDataset."""
+    if hasattr(obj, "datasets"):
+        ds = obj.datasets
+        return ds[0] if len(ds) else obj
+    return obj
+
+
+def _normalize_channel_shape(ch):
+    """Squeeze a DeepMIMO channel array down to [n_users, N_ANT, N_SUB] complex.
+
+    The middle axes carry the RX antenna (1) and TX antenna (64) dimensions;
+    their exact order is not relied upon -- singleton axes are dropped and the
+    remaining two are oriented by matching N_ANT and N_SUB.
     """
-    raise NotImplementedError(
-        "Fill load_raw() from the Phase 0 handoff: ChannelParameters fields, "
-        "deepmimo.load/generate signature, and where the channel matrix and "
-        "user positions live on the Dataset object."
+    ch = np.asarray(ch)
+    print("raw channel shape:", ch.shape, ch.dtype)
+    n_users = ch.shape[0]
+
+    # drop every singleton axis after the user axis
+    rest = [s for s in ch.shape[1:] if s != 1]
+    ch = ch.reshape((n_users,) + tuple(rest))
+
+    if ch.ndim != 3:
+        raise ValueError(
+            "expected 3 dims after squeezing, got %s. Inspect the raw shape "
+            "above and adjust _normalize_channel_shape()." % (ch.shape,))
+
+    if ch.shape[1] == N_SUB and ch.shape[2] == N_ANT:
+        ch = ch.transpose(0, 2, 1)                 # [N,S,A] -> [N,A,S]
+    elif not (ch.shape[1] == N_ANT and ch.shape[2] == N_SUB):
+        raise ValueError(
+            "cannot orient channel to [N,%d,%d]; got %s" % (N_ANT, N_SUB, ch.shape))
+
+    print("oriented channel shape:", ch.shape)
+    return ch
+
+
+def load_raw(n_subsample=N_SUBSAMPLE):
+    """Generate channels for a deterministic UE subset of one BS / one RX set.
+
+    Returns:
+        H_all   -- complex array [n_users, N_ANT, N_SUB]
+        pos_all -- float array   [n_users, 2]   (x, y; z dropped, O1 is ground-level)
+    """
+    import deepmimo
+
+    # Deterministic spatially-spread subset, chosen BEFORE channel computation
+    # so we never pay for the ~498k users we do not use.
+    idxs = np.linspace(0, RX_SET_SIZE - 1, n_subsample).astype(int)
+
+    ch_params = build_ch_params(deepmimo)
+    print("generating %d UEs | BS set %d | RX set %d | %d subcarriers of %d"
+          % (n_subsample, TX_SET, RX_SET, N_SUB, FFT_SIZE))
+
+    out = deepmimo.generate(
+        SCENARIO,
+        load_params={"tx_sets": {TX_SET: "all"},
+                     "rx_sets": {RX_SET: "all"},
+                     "max_paths": N_PATHS},
+        trim_params={"idxs": idxs},
+        ch_params=ch_params,
     )
+    ds = _as_dataset(out)
+    print("dataset:", type(ds).__name__, "| n_ue:", getattr(ds, "n_ue", "?"))
+
+    H_all = _normalize_channel_shape(ds.ch)
+    pos_all = np.asarray(ds.rx_pos)[:, :2].astype(np.float64)   # drop z
+    print("positions:", pos_all.shape)
+
+    assert H_all.shape[0] == pos_all.shape[0], (H_all.shape, pos_all.shape)
+    return H_all, pos_all
 
 
 def preprocess(H_all, pos_all, out_dir=OUT_DIR):
