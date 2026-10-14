@@ -4,6 +4,14 @@ Frozen per IMPLEMENTATION_PHASES.md Phase 2. The labeller here is the ONLY
 source of beam labels in the project -- it labels real samples AND synthetic
 samples (the GAN does not produce labels; they are derived analytically from
 the generated channel).
+
+Phase 2 left open whether `deepmimo.steering_vec()` should replace this
+hand-rolled math. RESOLVED 2026-10-14 on DeepMIMO 4.0.5: it should not. Its
+signature is `steering_vec(array, phi=0, theta=0, spacing=0.5)` -- antenna
+positions plus ONE direction, returning a single array-response vector. A
+32-beam codebook would need 32 calls with hand-mapped angles, which is more
+bug surface than the formula below, and the DFT codebook is the standard
+definition in the beam-prediction literature. Do not revisit.
 """
 import numpy as np
 import torch

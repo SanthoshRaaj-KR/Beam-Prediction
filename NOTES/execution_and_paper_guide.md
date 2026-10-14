@@ -48,10 +48,20 @@
 - **Installed version drifts.** 4.0.5 was observed on 2026-10-14 where this document previously recorded 4.0.3. Print `deepmimo.__version__` and don't assume signatures match an older note.
 - **DeepMIMO's download server rate-limits (`429 Too Many Requests`)** if you retry downloads in quick succession. If you hit this, stop retrying immediately — wait 10-15 minutes before trying again once. Don't loop retries in code.
 
+**API facts established 2026-10-14 (DeepMIMO 4.0.5) — these resolve most of the old open questions:**
+
+- **`load()` returns a `MacroDataset`, not a `Dataset`.** `deepmimo.load('o1_28')` with no restriction loads **all 54 TX-RX pairs** (18 TX sets, TXset 3–20, × 3 RX sets) and takes minutes. RX set sizes are **497,931 / 199,281 / 487,711** users, i.e. ~1.18M users per TX set. Restrict with `load_params={'tx_sets': ..., 'rx_sets': ...}` — the project needs 2,500 users, so one TX set and one RX set is ample. Index a loaded MacroDataset via `ds.datasets[i]`; `len(ds)` is the pair count.
+- **`generate()` is the channel-computing entry point and supports UE subsetting.** Signature: `generate(scen_name, *, load_params=None, trim_params=None, ch_params=None)`. `trim_params` accepts `idxs` (UE indices, **applied first**), `idxs_mode` ∈ `'active'|'linear'|'uniform'|'row'|'col'|'limits'`, `idxs_kwargs`, plus `bs_fov`, `ue_fov`, `path_depth`, `path_types`. **Use this instead of loading everything and slicing afterwards** — it is the difference between a fast Phase 1 and an out-of-memory fight. `idxs_mode='active'` is also the natural way to get the dead-user filtering that Phase 1 requires. Helpers: `get_uniform_idxs`, `get_linear_idxs`, `get_idxs_with_limits`, `get_grid_idxs`.
+- **`load_params` also takes `max_paths`** (default 10) and `matrices` (restrict which matrices load).
+- **`ChannelParameters` is a `DotDict`** — set nested values as dicts, e.g. `ChannelParameters(bs_antenna={'shape': [64, 1]}, freq_domain=True)`, and read them back with dot notation (`params.bs_antenna.shape`). Lists become numpy arrays at validation. `params.validate(n_ues)` checks consistency. Inspect the full default set with `pprint(ChannelParameters().to_dict())`.
+- **`steering_vec()` does NOT replace the hand-rolled DFT codebook — decided, keep the hand-rolled version.** Its signature is `steering_vec(array, phi=0, theta=0, spacing=0.5)`: it takes antenna *positions* and a single direction and returns one array-response vector, so building a 32-beam codebook would mean 32 calls with hand-mapped angles — more bug surface than the five-line DFT formula, not less. The DFT codebook is also the standard definition in the beam-prediction literature and therefore the better thing to report.
+
 **Still to be confirmed once we get further into Phase 1** (update this list as we go):
-- Exact `ChannelParameters` field names for setting 28GHz / 64-element ULA / 32 subcarriers.
-- Exact `deepmimo.load()` vs `deepmimo.generate()` call signature and what `Dataset` object structure looks like (fields for channel matrix, user position, etc.).
-- Whether `deepmimo.steering_vec()` can replace the hand-rolled DFT codebook math in Phase 2.
+- The exact **OFDM field names inside `ChannelParameters.DEFAULT_PARAMS`**, and whether `o1_28` supports exactly **32 subcarriers**. If it does not, the nearest supported value must be documented and propagated to every `32` downstream (codebook size is separate and stays 32).
+- The attribute names on a single `Dataset` (`ds.datasets[i]`) holding the **channel matrix** and **RX positions**.
+- Scenario carrier frequency and position grid bounds, for the paper's methodology section.
+
+*Resolved 2026-10-14 (see the API facts above): `load()` vs `generate()` signatures, `MacroDataset` structure, UE subsetting via `trim_params`, and the `steering_vec()` question (answer: keep the hand-rolled DFT codebook).*
 
 ---
 
