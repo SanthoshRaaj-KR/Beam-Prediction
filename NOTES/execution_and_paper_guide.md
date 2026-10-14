@@ -126,6 +126,38 @@ Three consequences, all verified on 4.0.5:
   `/root/deepmimo_scenarios` removes the need for the symlink dance entirely;
   the symlink remains only as a fallback for a copy found elsewhere.
 
+### The generator must output unit-Frobenius samples (a `Tanh` here was a bug)
+
+First full run (2026-10-14) produced `discriminability = 1.000, std = 0.000`
+and only **5 of 32** beam classes in the synthetic set. That is not a verdict on
+GAN quality — it is the signature of a systematic artifact, and the cause was
+the generator's final `nn.Tanh()`.
+
+Phase 1 divides every real sample by its own Frobenius norm, so real data sits
+*exactly* on the unit sphere: `‖x‖_F = 1`, RMS element `1/sqrt(4096) = 0.0156`
+over `[2,64,32]`. `Tanh` bounds each element to `[-1,1]`, putting the
+generator's norm one to two orders of magnitude higher. Real vs fake was then
+separable by a **single scalar**, so the critic saturated at once and the
+generator received almost no usable gradient — visible in the training curve as
+the Wasserstein estimate *rising* from 0.12 (iter ~700) to 0.62 (iter 2900)
+instead of falling.
+
+Fix: drop the `Tanh` and normalize the output onto the same manifold,
+`x / ‖x‖_F`. Scale carries no information in this pipeline anyway — labels come
+from an `argmax` that is invariant to positive scaling, and spectral efficiency
+uses the separately saved per-sample norms.
+
+**Generalisable lesson:** when a discriminability score comes back at exactly
+1.000 with zero variance across seeds, look for a scalar summary statistic that
+separates the two sets perfectly (norm, mean, variance, support) before
+concluding anything about realism. A genuine quality problem is noisy; a
+preprocessing mismatch is not.
+
+A corollary for resuming: removing an activation **renames no parameter**, so a
+stale checkpoint still `load_state_dict()`s cleanly and training silently
+resumes the old model. `run_all.py --reset gan` deletes the checkpoints and the
+sweep rows that depended on them.
+
 ### Never pass `output_dir == scenarios_folder` to `download()`
 
 Reading `_extract_and_move_scenario()`: it unzips next to the zip, renames the

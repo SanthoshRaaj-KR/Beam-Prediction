@@ -532,6 +532,64 @@ def stage_figures(ctx):
     return sig
 
 
+STAGE_KEYS = {
+    "data": ["raw_channel_shape", "n_users_generated", "n_dropped_dead",
+             "n_retained", "pos_min", "pos_max"],
+    "labels": ["majority_class_acc", "majority_class_id",
+               "n_classes_populated", "label_counts"],
+    "baseline": ["r0_top1_mean", "r0_top1_std", "r0_n_runs"],
+    "gan": ["gan_iters", "gan_train_seconds", "gan_final_w_est_mean"],
+    "quality": ["gan_discriminability_mean", "gan_discriminability_std",
+                "gan_discriminability_verdict", "gan_label_overlap",
+                "gan_synth_classes_populated", "gan_power_wasserstein"],
+    "figures": ["best_ratio", "best_top1_mean", "improvement_pp",
+                "mannwhitney_p", "ttest_p", "n_runs_total"],
+}
+
+
+def _reset_from(ctx, stage):
+    """Invalidate `stage` and everything after it, artifacts included.
+
+    Needed whenever the code a stage depends on changes. The GAN case is the
+    dangerous one: editing the generator's final activation does not rename any
+    parameter, so a stale checkpoint still load_state_dict()s cleanly and
+    training silently resumes the old model. Deleting the checkpoints is the
+    only way to be sure a fix actually took effect.
+    """
+    import shutil as _sh
+    if stage not in STAGES:
+        raise SystemExit("unknown stage %r; valid: %s" % (stage, STAGES))
+    kill = STAGES[STAGES.index(stage):]
+    print("resetting:", ", ".join(kill))
+
+    if "gan" in kill and os.path.isdir(ctx.ckpt_dir):
+        n = len([f for f in os.listdir(ctx.ckpt_dir) if f.endswith(".pt")])
+        _sh.rmtree(ctx.ckpt_dir)
+        os.makedirs(ctx.ckpt_dir, exist_ok=True)
+        print("  deleted %d GAN checkpoint(s)" % n)
+
+    # The results CSV is shared by baseline (ratio 0) and sweep (the rest), so
+    # drop only the rows the reset actually invalidates.
+    if os.path.isfile(ctx.csv_path):
+        if "baseline" in kill:
+            os.remove(ctx.csv_path)
+            print("  deleted %s (all runs)" % ctx.csv_path)
+        elif "sweep" in kill:
+            import pandas as pd
+            df = pd.read_csv(ctx.csv_path)
+            keep = df[df["synthetic_ratio"] == 0]
+            print("  dropped %d synthetic-ratio run(s), kept %d R0 run(s)"
+                  % (len(df) - len(keep), len(keep)))
+            keep.to_csv(ctx.csv_path, index=False)
+
+    ctx.state.d["done"] = [s for s in ctx.state.d["done"] if s not in kill]
+    for s in kill:
+        for k in STAGE_KEYS.get(s, []):
+            ctx.state.d["numbers"].pop(k, None)
+    ctx.state.save()
+    ctx._cache.clear()
+
+
 HANDLERS = {
     "scenario": stage_scenario, "data": stage_data, "labels": stage_labels,
     "baseline": stage_baseline, "gan": stage_gan, "quality": stage_quality,
@@ -605,6 +663,11 @@ def parse_args(argv=None):
                    help="start at this stage and run to the end")
     p.add_argument("--redo", default=None,
                    help="comma-separated stages to re-run even if already done")
+    p.add_argument("--reset", default=None,
+                   help="invalidate this stage and all later ones, deleting the "
+                        "artifacts they produced (GAN checkpoints, the rows they "
+                        "contributed to the results CSV), then run from there. "
+                        "Use this after changing code a finished stage depends on.")
     p.add_argument("--status", action="store_true",
                    help="print progress and recorded numbers, then exit")
     p.add_argument("--download", action="store_true",
@@ -655,6 +718,9 @@ def main(argv=None):
     if args.status:
         print_status(ctx)
         return 0
+
+    if args.reset:
+        _reset_from(ctx, args.reset)
 
     if args.only:
         plan = [s.strip() for s in args.only.split(",")]
