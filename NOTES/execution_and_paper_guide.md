@@ -106,6 +106,44 @@ Two consequences worth remembering:
   `try/except Exception`, not `hasattr`. This applies to future debugging, not
   just the one site that was fixed.
 
+### `scenarios_folder` is relative, in-memory, and resets every process
+
+`deepmimo.config` is a singleton callable: `config()` prints everything,
+`config(key)` gets, `config(key, value)` sets. Its `set()` writes **only to an
+in-memory dict — nothing is persisted to disk.** The default `scenarios_folder`
+is the *relative* string `'deepmimo_scenarios'`, resolved against the current
+working directory.
+
+Three consequences, all verified on 4.0.5:
+
+- Every new interpreter starts again with the relative default. A script that
+  runs one stage in a fresh process must re-set it, or the scenario "vanishes".
+  `run_all.py` calls `_configure_deepmimo()` in each stage that needs it.
+- Set it to an **absolute** path. With a relative value, whether the scenario is
+  found depends on the cwd the process happened to inherit.
+- The 21 GB scenario cannot live under `/kaggle/working` (20 GB cap), so this
+  setting is what keeps it on the root filesystem. Pointing the library at
+  `/root/deepmimo_scenarios` removes the need for the symlink dance entirely;
+  the symlink remains only as a fallback for a copy found elsewhere.
+
+### Never pass `output_dir == scenarios_folder` to `download()`
+
+Reading `_extract_and_move_scenario()`: it unzips next to the zip, renames the
+folder to `<output_dir>/o1_28`, then calls
+`shutil.move(that, <scenarios_folder>/o1_28)`.
+
+- If `output_dir` **equals** `scenarios_folder`, that final move targets a path
+  that already exists, so `shutil.move` puts it *inside* itself and you get
+  `<dir>/o1_28/o1_28`. `run_all.py`'s `_is_scenario_dir()` detects this nested
+  layout, because a previous run may already have produced it.
+- If `output_dir` is on a **different filesystem**, the move falls back to
+  `copytree` — this is the original 21 GB cross-device failure.
+
+The correct arrangement is a **sibling directory on the same filesystem**:
+download to `/root/dm_download`, with `scenarios_folder = /root/deepmimo_scenarios`.
+The final move is then a cheap rename, nothing is copied, and the 2.28 GB zip
+can be deleted afterwards to reclaim space.
+
 
 ---
 

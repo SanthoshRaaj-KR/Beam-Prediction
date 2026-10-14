@@ -9,12 +9,17 @@
 ```
 
 ```python
-!python /kaggle/working/Beam-Prediction/mmwave-gan-beamforming/run_all.py
+!python /kaggle/working/Beam-Prediction/mmwave-gan-beamforming/run_all.py --download
 ```
 
-That is the whole study: channels → labels → baseline → GAN → quality checks →
-21-run sweep → figures, tables and significance tests. Add `--download` on the
-first ever run if the `o1_28` scenario is not on the machine yet.
+That is the whole study: scenario setup → channels → labels → baseline → GAN →
+quality checks → 21-run sweep → figures, tables and significance tests.
+
+`--download` fetches `o1_28` (2.28 GB zip, ~21 GB extracted) **once**, into
+`/root/deepmimo_scenarios` — deliberately *not* `/kaggle/working`, whose 20 GB
+quota the extracted scenario can never fit. It is safe to leave the flag on for
+later runs: the stage checks availability first and skips the download. Drop it
+only if you want a hard failure instead of a 15-minute download.
 
 **No kernel restart needed.** The restart after `pip install deepmimo` is only
 required for the *notebook's own* interpreter; `run_all.py` is a subprocess, so

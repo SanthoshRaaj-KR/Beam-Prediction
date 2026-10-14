@@ -182,82 +182,160 @@ class Ctx:
 # stages
 # --------------------------------------------------------------------------
 
+def _configure_deepmimo(args):
+    """Point deepmimo at an ABSOLUTE scenarios dir. Must run in every process.
+
+    `deepmimo.config` is a singleton whose `set()` only writes an in-memory
+    dict -- nothing is persisted. So each new interpreter starts again with the
+    default `scenarios_folder == "deepmimo_scenarios"`, a RELATIVE path
+    resolved against the current working directory. Two consequences:
+
+      * `--only data` in a fresh process would look for the scenario under
+        whatever cwd it happened to inherit, and report it missing.
+      * The 21 GB scenario must NOT live under /kaggle/working (20 GB cap), so
+        the directory has to be chosen explicitly rather than inherited.
+
+    Setting it absolute, on every run, is what makes both problems go away.
+    """
+    import deepmimo
+    deepmimo.config("scenarios_folder", args.scenario_dir)
+    return deepmimo
+
+
+def _is_scenario_dir(path, min_files=100):
+    """A real extracted scenario (o1_28 has 4161 files), or a nested copy.
+
+    Returns the directory that actually holds the files, or None. The nested
+    case shows up when a previous download's final `shutil.move()` landed
+    inside an existing target, giving `<dir>/o1_28/o1_28`.
+    """
+    if not os.path.isdir(path):
+        return None
+    try:
+        entries = os.listdir(path)
+    except OSError:
+        return None
+    if len(entries) >= min_files:
+        return path
+    nested = os.path.join(path, SCENARIO)
+    if os.path.isdir(nested) and len(os.listdir(nested)) >= min_files:
+        return nested
+    return None
+
+
+def _free_gb(path):
+    import shutil as _sh
+    probe = path
+    while probe and not os.path.isdir(probe):
+        probe = os.path.dirname(probe)
+    try:
+        return _sh.disk_usage(probe or "/").free / 1e9
+    except Exception:
+        return float("nan")
+
+
 def stage_scenario(ctx):
     """Make `deepmimo.get_available_scenarios()` report o1_28.
 
-    The extracted scenario is ~21 GB, which cannot fit in Kaggle's 20 GB
-    /kaggle/working quota, so it lives on the root filesystem and is symlinked
-    into the library's scenarios directory. See execution guide 0.5 -- this is
-    the only viable arrangement, not a workaround for a tight fit.
+    The extracted scenario is ~21 GB and can never fit Kaggle's 20 GB
+    /kaggle/working quota, so it is kept on the root filesystem and the
+    library is pointed at it. See execution guide 0.5.
     """
-    import deepmimo
+    args = ctx.args
+    deepmimo = _configure_deepmimo(args)
+    scen_dir = args.scenario_dir
 
+    print("deepmimo %s | scenarios dir: %s (%.1f GB free)"
+          % (deepmimo.__version__, scen_dir, _free_gb(scen_dir)))
     avail = list(deepmimo.get_available_scenarios() or [])
-    print("deepmimo", deepmimo.__version__, "| available:", avail)
+    print("available:", avail)
     if SCENARIO in avail:
         return {"source": "already available"}
 
-    # Where does the library look? Fall back to the observed default.
-    scen_dir = "/kaggle/working/deepmimo_scenarios"
-    try:
-        cfg = deepmimo.config
-        got = cfg("scenarios_folder") if callable(cfg) else None
-        if isinstance(got, str) and got:
-            scen_dir = got
-    except Exception:
-        pass
-    print("scenarios dir:", scen_dir)
-
-    # An extracted copy may already be sitting on the root filesystem from an
-    # earlier download whose cross-device shutil.move() failed.
-    for cand in ("/root/deepmimo_scenarios/" + SCENARIO,
+    # An extracted copy may survive from an earlier session or from a download
+    # whose cross-device move failed (copytree raises before rmtree(src)).
+    link = os.path.join(scen_dir, SCENARIO)
+    for cand in (os.path.join(scen_dir, SCENARIO),
+                 "/root/deepmimo_scenarios/" + SCENARIO,
+                 "/kaggle/working/deepmimo_scenarios/" + SCENARIO,
                  "/root/" + SCENARIO,
                  os.path.join(os.path.expanduser("~"), SCENARIO)):
-        if os.path.isdir(cand) and len(os.listdir(cand)) > 100:
+        real = _is_scenario_dir(cand)
+        if not real:
+            continue
+        print("found %d files at %s" % (len(os.listdir(real)), real))
+        if os.path.abspath(real) != os.path.abspath(link):
             os.makedirs(scen_dir, exist_ok=True)
-            link = os.path.join(scen_dir, SCENARIO)
+            if os.path.exists(link) or os.path.islink(link):
+                os.remove(link) if os.path.islink(link) else None
             if not os.path.exists(link):
-                os.symlink(cand, link)
-            print("symlinked %s -> %s (%d files)"
-                  % (link, cand, len(os.listdir(cand))))
-            if SCENARIO in (deepmimo.get_available_scenarios() or []):
-                return {"source": "symlinked from " + cand}
+                os.symlink(real, link)
+                print("symlinked %s -> %s" % (link, real))
+        if SCENARIO in (deepmimo.get_available_scenarios() or []):
+            return {"source": real}
 
-    if not ctx.args.download:
+    if not args.download:
         raise SystemExit(
-            "o1_28 is not available and no extracted copy was found.\n"
-            "Re-run with --download to fetch it (2.28 GB, 10-15 min).\n"
+            "\no1_28 is not available and no extracted copy was found.\n"
+            "Re-run with --download to fetch it (2.28 GB zip, ~21 GB "
+            "extracted, 10-15 min).\n"
             "Do this ONCE -- repeated calls risk an HTTP 429 rate limit.")
 
-    # One attempt, never a retry loop. output_dir does NOT control the final
-    # install target; the move to scen_dir is what fails, and we recover above.
-    print("downloading %s (2.28 GB) -- single attempt, no retries" % SCENARIO)
-    os.makedirs("/root/deepmimo_scenarios", exist_ok=True)
+    # Download into a SEPARATE directory on the SAME filesystem as scen_dir.
+    #   * same filesystem  -> the library's final shutil.move() is a rename,
+    #     not a 21 GB copytree, so no cross-device error and no quota blowup
+    #   * separate directory -> output_dir == scenarios_dir would make that
+    #     final move land inside its own target as <dir>/o1_28/o1_28
+    dl_dir = os.path.join(os.path.dirname(scen_dir.rstrip("/\\")) or "/",
+                          "dm_download")
+    need = 24.0
+    free = _free_gb(dl_dir)
+    print("downloading %s -> %s (%.1f GB free; ~%.0f GB needed)"
+          % (SCENARIO, dl_dir, free, need))
+    if free < need:
+        raise SystemExit(
+            "only %.1f GB free where the scenario must be staged; ~%.0f GB is "
+            "needed (2.28 GB zip + 21 GB extracted). Point --scenario-dir at a "
+            "bigger filesystem." % (free, need))
+
+    os.makedirs(dl_dir, exist_ok=True)
+    os.makedirs(scen_dir, exist_ok=True)
     try:
-        deepmimo.download(SCENARIO, output_dir="/root/deepmimo_scenarios")
+        # Single attempt. Never retry in a loop -- that is how you earn a 429.
+        deepmimo.download(SCENARIO, output_dir=dl_dir)
     except Exception as e:
         print("download() raised: %r" % (e,))
-        print("This is expected if it got as far as the cross-device move; "
-              "the extracted files usually survive. Re-running this stage "
-              "will find and symlink them.")
+        print("If it got as far as extracting, the files usually survive; "
+              "this stage will find them below or on a re-run.")
 
-    for cand in ("/root/deepmimo_scenarios/" + SCENARIO,):
-        if os.path.isdir(cand) and len(os.listdir(cand)) > 100:
-            os.makedirs(scen_dir, exist_ok=True)
-            link = os.path.join(scen_dir, SCENARIO)
-            if not os.path.exists(link):
-                os.symlink(cand, link)
-            print("symlinked %s -> %s" % (link, cand))
+    for cand in (os.path.join(scen_dir, SCENARIO), os.path.join(dl_dir, SCENARIO)):
+        real = _is_scenario_dir(cand)
+        if real and not os.path.exists(link):
+            os.symlink(real, link)
+            print("symlinked %s -> %s" % (link, real))
 
     avail = list(deepmimo.get_available_scenarios() or [])
     if SCENARIO not in avail:
-        raise SystemExit("still not available after download: %s" % avail)
+        raise SystemExit(
+            "still not available after download. available=%s\n"
+            "Inspect %s and %s, then re-run this stage." % (avail, scen_dir, dl_dir))
+
+    # Reclaim the 2.28 GB zip now that the scenario is in place.
+    zp = os.path.join(dl_dir, "%s_downloaded.zip" % SCENARIO)
+    if os.path.isfile(zp):
+        try:
+            os.remove(zp)
+            print("removed %s (reclaimed 2.3 GB)" % zp)
+        except OSError as e:
+            print("could not remove %s: %r" % (zp, e))
     return {"source": "downloaded"}
 
 
 def stage_data(ctx):
     """Phase 1 -- channels, dead-user filtering, 500/2000 split."""
     from data.preprocess import load_raw, preprocess
+
+    _configure_deepmimo(ctx.args)      # fresh process => config is back to default
 
     H_all, pos_all = load_raw(n_subsample=ctx.args.subsample)
     info = preprocess(H_all, pos_all, out_dir=ctx.data_dir)
@@ -536,6 +614,10 @@ def parse_args(argv=None):
     p.add_argument("--device", default="cuda")
     p.add_argument("--n-iters", type=int, default=3000,
                    help="GAN iterations (frozen at 3000 for the paper)")
+    p.add_argument("--scenario-dir", default="/root/deepmimo_scenarios",
+                   help="absolute dir holding the extracted scenario. Must NOT "
+                        "be under /kaggle/working -- o1_28 is ~21 GB and the "
+                        "working quota is 20 GB.")
     p.add_argument("--subsample", type=int, default=6000,
                    help="UEs to generate channels for before dead-user filtering")
     p.add_argument("--ratios", default="0,25,50,75,100,150,200")
